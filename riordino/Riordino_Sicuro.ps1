@@ -27,7 +27,11 @@ if (-not $Cartella) { $Cartella = 'D:\_Riordino' }
 $Cartella = $Cartella.TrimEnd('\')
 
 # ---------- utilita' ----------
+# Il prefisso \\?\ (percorsi lunghi) funziona solo se .NET lo supporta: altrimenti percorsi normali.
+$UsaPrefisso = $false
+try { $UsaPrefisso = [IO.Directory]::Exists('\\?\' + $Cartella) } catch { }
 function LP([string]$p) {
+    if (-not $UsaPrefisso) { return $p }
     if ($p.StartsWith('\\?\')) { return $p }
     if ($p.StartsWith('\\')) { return '\\?\UNC\' + $p.Substring(2) }
     return '\\?\' + $p
@@ -40,6 +44,7 @@ function Padre([string]$p) {
     return $t.Substring(0, $i)
 }
 function NomeFile([string]$p) { $p.Substring($p.LastIndexOf('\') + 1) }
+function Senza([string]$p) { if ($p.StartsWith('\\?\')) { return $p.Substring(4) }; return $p }
 function Riga($w, [object[]]$campi) { $w.WriteLine((($campi | ForEach-Object { Csv $_ }) -join ',')) }
 
 # ---------- regole di protezione sul percorso ----------
@@ -88,13 +93,13 @@ function CercaCataloghi([string]$radice) {
         $d = $pila.Pop()
         try {
             foreach ($f in [IO.Directory]::EnumerateFiles((LP $d))) {
-                if ($f -match '\.(lrcat|cocatalog)$|\\digikam4\.db$') { $trovati.Add($f.Substring(4)) }
+                if ($f -match '\.(lrcat|cocatalog)$|\\digikam4\.db$') { $trovati.Add((Senza $f)) }
             }
             foreach ($s in [IO.Directory]::EnumerateDirectories((LP $d))) {
                 if ([IO.File]::GetAttributes($s) -band [IO.FileAttributes]::ReparsePoint) { continue }
                 $n = NomeFile $s
                 if ($n -match '^(\$recycle\.bin|system volume information|windows|windowsapps)$' -or $n -like '*.lrdata') { continue }
-                $pila.Push($s.Substring(4))
+                $pila.Push((Senza $s))
             }
         } catch { }
     }
@@ -151,6 +156,7 @@ function Classifica([string]$o, [string]$d) {
         if ($k -ne 'estensione protetta' -and $d -match $Regole[$k]) { return "destinazione: $k" }
     }
     if ($ProteggiFoto -and $o -match $EstFoto) { return 'foto/video con catalogo Lightroom/C1/digiKam presente' }
+    if (-not $UsaPrefisso -and ($o.Length -ge 260 -or $d.Length -ge 248)) { return 'percorso troppo lungo (oltre 260 caratteri)' }
     $lo = LP $o
     if (-not [IO.File]::Exists($lo)) {
         if ([IO.Directory]::Exists($lo)) { return 'origine e una cartella (non gestita)' }
@@ -184,6 +190,7 @@ $ProteggiFoto = ($Cataloghi.Count -gt 0 -and -not $PermettiFotoConCatalogo)
 
 $rep = New-Object System.Collections.Generic.List[string]
 $rep.Add("Analisi sicurezza - $(Get-Date -Format 'yyyy-MM-dd HH:mm')")
+$rep.Add("Percorsi lunghi supportati: $UsaPrefisso")
 $rep.Add("Cataloghi foto trovati: $($Cataloghi.Count)")
 foreach ($c in $Cataloghi) { $rep.Add("   $c") }
 if ($ProteggiFoto) { $rep.Add('   => foto/video ESCLUSI: se sono gestiti da Lightroom vanno spostati DA DENTRO Lightroom, altrimenti il catalogo si rompe.') }
@@ -211,7 +218,7 @@ foreach ($mf in $mappe) {
     $rep.Add('')
     $rep.Add("== $nome : righe $($mp.Righe.Count) | sicure $($sicuri.Count) | escluse $($esclusi.Count)")
     $rep.Add("   colonne: origine='$($mp.ColO)' destinazione='$($mp.ColD)'$(if ($mp.ModoCartella) { ' (cartella + nome file)' }) separatore='$($mp.Delim)' codifica=$($mp.Enc)")
-    foreach ($s in ($mp.Righe | Select-Object -First 3)) { $rep.Add("   es.: $($s.Origine)  ->  $($s.Destinazione)") }
+    foreach ($s in ($mp.Righe | Select-Object -First 3)) { $rep.Add("   es.: $($s.Origine)  ->  $($s.Destinazione)   [esiste: $(Test-Path -LiteralPath $s.Origine)]") }
     foreach ($g in ($esclusi | Group-Object Motivo | Sort-Object Count -Descending)) { $rep.Add(('   {0,7}  {1}' -f $g.Count, $g.Name)) }
 }
 $rep.Add(''); $rep.Add("TOTALE: sicure $totS | escluse $totE")

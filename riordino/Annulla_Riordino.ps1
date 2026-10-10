@@ -18,7 +18,11 @@ Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 if (-not $Cartella) { $Cartella = 'D:\_Riordino' }
 
+# Il prefisso \\?\ (percorsi lunghi) funziona solo se .NET lo supporta: altrimenti percorsi normali.
+$UsaPrefisso = $false
+try { $UsaPrefisso = [IO.Directory]::Exists('\\?\' + $Cartella) } catch { }
 function LP([string]$p) {
+    if (-not $UsaPrefisso) { return $p }
     if ($p.StartsWith('\\?\')) { return $p }
     if ($p.StartsWith('\\')) { return '\\?\UNC\' + $p.Substring(2) }
     return '\\?\' + $p
