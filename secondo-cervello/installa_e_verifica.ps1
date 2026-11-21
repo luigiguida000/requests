@@ -28,6 +28,9 @@ if (-not (Test-Path -LiteralPath $Vault -PathType Container)) { Ferma "la cartel
 if (-not (Test-Path -LiteralPath (Join-Path $Vault '.obsidian'))) {
     Ferma "in '$Vault' non c'e' la cartella .obsidian: non sembra un vault Obsidian."
 }
+# Percorso completo senza barra finale: "D:\Vault\" passato a Python romperebbe le virgolette.
+$Vault = (Resolve-Path -LiteralPath $Vault).Path.TrimEnd('\')
+if ($Vault -match '^[A-Za-z]:$') { $Vault = "$Vault\." }
 
 # 3. Copia dello strumento
 $sorgente = Join-Path $PSScriptRoot 'cervello.py'

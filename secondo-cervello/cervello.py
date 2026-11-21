@@ -39,7 +39,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from urllib.parse import unquote
 
-VERSIONE = "1.0.0"
+VERSIONE = "1.1.0"
 
 # Cartelle che non contengono note dell'utente.
 CARTELLE_SISTEMA = {".obsidian", ".trash", ".git", ".cervello", ".stfolder", ".sync"}
@@ -97,6 +97,11 @@ def impronta_file(percorso: Path) -> str:
 
 def impronta_bytes(dati: bytes) -> str:
     return hashlib.sha256(dati).hexdigest()
+
+
+def vault_predefinito() -> Path | None:
+    """Vault della cartella corrente; se non c'e', quello in cui sta lo script (.cervello/cervello.py)."""
+    return trova_vault(Path.cwd()) or trova_vault(Path(__file__).resolve().parent.parent)
 
 
 def trova_vault(partenza: Path) -> Path | None:
@@ -267,7 +272,10 @@ class Vault:
         d = unquote(destinazione).split("#")[0].split("?")[0]
         if not d:
             return None
-        for base in (da.parent, self.radice):
+        basi = (da.parent, self.radice)
+        if d.startswith("/"):  # in Obsidian la barra iniziale indica la radice del vault
+            d, basi = d.lstrip("/"), (self.radice,)
+        for base in basi:
             try:
                 c = (base / d).resolve()
             except (OSError, ValueError):
@@ -284,7 +292,7 @@ class Vault:
         """Genera (riga, tipo, obiettivo, incorporato) per ogni link della nota."""
         for n, riga in testo_senza_codice(self.testi[p]):
             for m in RE_WIKILINK.finditer(riga):
-                grezzo = m.group(2).split("|")[0]
+                grezzo = re.split(r"\\?\|", m.group(2), maxsplit=1)[0]  # anche [[Nota\|alias]] in tabella
                 obiettivo = re.split(r"[#^]", grezzo, maxsplit=1)[0].strip()
                 if obiettivo:
                     yield n, "wiki", obiettivo, bool(m.group(1))
@@ -296,6 +304,16 @@ class Vault:
 
 
 # --------------------------------------------------------------------------- salute
+
+def leggi_canvas(percorso: Path) -> list[str]:
+    """File richiamati da una Canvas di Obsidian (nodi di tipo file)."""
+    try:
+        dati = json.loads(leggi_testo(percorso))
+    except ValueError:
+        return []
+    nodi = dati.get("nodes", []) if isinstance(dati, dict) else []
+    return [n["file"] for n in nodi if isinstance(n, dict) and isinstance(n.get("file"), str)]
+
 
 def analizza_salute(v: Vault) -> dict:
     rotti, ambigui = [], []
@@ -322,6 +340,16 @@ def analizza_salute(v: Vault) -> dict:
                 if t.suffix.lower() == ".md":
                     entranti[t] += 1
                     uscenti[p] += 1
+                else:
+                    allegati_usati.add(t)
+    for c in v.allegati:
+        if c.suffix.lower() != ".canvas":
+            continue
+        allegati_usati.add(c)
+        for rif in leggi_canvas(c):
+            for t in v.risolvi(rif, c):
+                if t.suffix.lower() == ".md":
+                    entranti[t] += 1
                 else:
                     allegati_usati.add(t)
 
@@ -456,7 +484,7 @@ def rapporto_markdown(r: dict, massimo: int) -> str:
 
 
 def cmd_salute(a) -> int:
-    radice = Path(a.vault)
+    radice = _vault_da(a)
     if not radice.is_dir():
         print(f"ERRORE: la cartella {radice} non esiste.", file=sys.stderr)
         return 2
@@ -597,7 +625,7 @@ def _estratto(testo: str, termini: list[str], larghezza: int = 220) -> str:
 
 
 def cmd_cerca(a) -> int:
-    v = Vault(Path(a.vault))
+    v = Vault(_vault_da(a))
     risultati = cerca(v, a.domanda, a.quanti)
     if a.json:
         print(json.dumps(risultati, ensure_ascii=False, indent=2))
@@ -734,9 +762,12 @@ def scrittura_protetta(vault: Path, destinazione: Path, nuovo: bytes, attesa: st
             if impronta_file(destinazione) != dopo:
                 raise RuntimeError("verifica dopo la scrittura fallita")
         except Exception:
-            _ripristina(destinazione, cart, op)
-            op["stato"] = "annullata"
-            Giornale.salva(cart, op)
+            try:
+                _ripristina(destinazione, cart, op)
+                op["stato"] = "annullata"
+                Giornale.salva(cart, op)
+            except Exception:
+                pass  # resta "in_corso": il comando recupera rimettera' la nota com'era
             raise
         op["stato"] = "completata"
         Giornale.salva(cart, op)
@@ -808,7 +839,7 @@ def annulla(vault: Path, ident: str) -> dict:
 def _vault_da(a, file: Path | None = None) -> Path:
     if getattr(a, "vault", None):
         return Path(a.vault).resolve()
-    v = trova_vault(file or Path.cwd())
+    v = (trova_vault(file) if file else None) or vault_predefinito()
     if not v:
         raise RuntimeError("non trovo il vault (manca .obsidian): indica --vault PERCORSO")
     return v
@@ -827,6 +858,9 @@ def cmd_impronta(a) -> int:
 
 def cmd_scrivi(a) -> int:
     dest = Path(a.file)
+    if a.da != "-" and not Path(a.da).is_file():
+        print(f"ERRORE: il file con il nuovo contenuto ({a.da}) non esiste. Niente e' stato scritto.", file=sys.stderr)
+        return 2
     dati = sys.stdin.buffer.read() if a.da == "-" else Path(a.da).read_bytes()
     try:
         op = scrittura_protetta(_vault_da(a, dest), dest, dati, a.impronta, a.motivo or "")
@@ -987,6 +1021,28 @@ def autotest(verboso: bool = True) -> bool:
               and all(".cervello" not in v.rel(p) for p in Vault(V).note))
         prova("lucchetto rilasciato", not (V / ".cervello" / "lucchetto").exists())
 
+        # ---- casi reali di Obsidian: tabelle, barra iniziale, Canvas, vault trovato da solo
+        T = Path(tmp) / "Vault casi"
+        (T / ".obsidian").mkdir(parents=True)
+        (T / "Cartella").mkdir()
+        (T / "Tabella.md").write_text("| Colonna |\n|---|\n| [[Bersaglio\\|alias]] |\n"
+                                      "[assoluto](/Cartella/Bersaglio.md)\n", encoding="utf-8")
+        (T / "Cartella" / "Bersaglio.md").write_text("Testo\n", encoding="utf-8")
+        (T / "Da canvas.md").write_text("Solo nella canvas\n", encoding="utf-8")
+        (T / "Mappa.canvas").write_text('{"nodes":[{"id":"1","type":"file","file":"Da canvas.md"}],"edges":[]}',
+                                        encoding="utf-8")
+        rc = analizza_salute(Vault(T))
+        prova("link con \\| dentro una tabella non e' rotto", not rc["link_rotti"], str(rc["link_rotti"]))
+        prova("link Markdown con barra iniziale = radice del vault", not rc["link_rotti"])
+        prova("le note collegate da una Canvas non sono isolate", "Da canvas.md" not in rc["note_isolate"],
+              str(rc["note_isolate"]))
+        cwd = os.getcwd()
+        try:
+            os.chdir(T / "Cartella")
+            prova("trova il vault partendo da una sottocartella", vault_predefinito() == T.resolve())
+        finally:
+            os.chdir(cwd)
+
     if verboso:
         for nome, ok, dettaglio in esiti:
             print(f"[{'OK' if ok else 'ERRORE'}] {nome}" + ("" if ok or not dettaglio else f"  -> {dettaglio}"))
@@ -1011,7 +1067,7 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="comando", required=True)
 
     s = sub.add_parser("salute", help="controllo di salute del vault (solo lettura)")
-    s.add_argument("vault", nargs="?", default=".")
+    s.add_argument("vault", nargs="?", help="cartella del vault (predefinito: quello in cui ti trovi)")
     s.add_argument("--rapporto", help="salva il rapporto in questo file invece di stamparlo")
     s.add_argument("--json", action="store_true", help="risultato in JSON (per Claude)")
     s.add_argument("--massimo", type=int, default=30, help="voci per elenco (predefinito 30)")
@@ -1021,7 +1077,7 @@ def main(argv=None) -> int:
 
     s = sub.add_parser("cerca", help="cerca nelle note con citazioni (solo lettura)")
     s.add_argument("domanda")
-    s.add_argument("--vault", default=".")
+    s.add_argument("--vault")
     s.add_argument("--quanti", type=int, default=8)
     s.add_argument("--json", action="store_true")
     s.set_defaults(f=cmd_cerca)

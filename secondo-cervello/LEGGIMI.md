@@ -11,7 +11,7 @@ Non serve installare niente oltre a Python (che hai già, 3.12). Funziona su Win
 3. Quando chiede il percorso del vault, incollalo (la cartella che contiene `.obsidian`).
 
 Lo script copia `cervello.py` in `<vault>\.cervello\` (cartella nascosta: Obsidian non la mostra),
-fa 29 prove su un vault finto e poi il primo controllo di salute sul tuo vault, **senza modificare le note**.
+fa 33 prove su un vault finto e poi il primo controllo di salute sul tuo vault, **senza modificare le note**.
 
 ## Uso di tutti i giorni (da PowerShell, dentro la cartella del vault)
 | Vuoi... | Scrivi |
